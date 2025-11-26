@@ -114,7 +114,8 @@ public class DevUITranslatorCommand implements Runnable {
         languages.stream()
                 .map(String::trim)
                 .filter(lang -> !lang.isBlank())
-                .forEach(language -> translateLanguage(i18nFolder, englishEntries, language, dialectsByLanguage.getOrDefault(language, List.of())));
+                .forEach(language -> translateLanguage(i18nFolder, englishEntries, language,
+                        dialectsByLanguage.getOrDefault(language, List.of())));
 
         System.out.println("Translation complete at " + LocalDateTime.now());
     }
@@ -506,11 +507,13 @@ public class DevUITranslatorCommand implements Runnable {
     }
 
     private void translateLanguage(Path i18nFolder, Map<String, TranslationEntry> baseEntries, String languageCode, List<String> dialects) {
-        Map<String, TranslationEntry> languageTranslations = translateEntries(baseEntries, languageLabel(languageCode));
+        boolean skipTranslation = languageCode.equalsIgnoreCase("en");
+        Map<String, TranslationEntry> languageTranslations = translateEntries(baseEntries, languageLabel(languageCode), skipTranslation);
         writeTranslationFile(i18nFolder, languageTranslations, languageCode);
         for (String dialect : dialects) {
             String dialectLabel = languageLabel(dialect);
-            Map<String, TranslationEntry> dialectTranslations = translateEntries(baseEntries, dialectLabel);
+            boolean skipDialectTranslation = dialect.toLowerCase(Locale.ROOT).startsWith("en");
+            Map<String, TranslationEntry> dialectTranslations = translateEntries(baseEntries, dialectLabel, skipDialectTranslation);
             Map<String, TranslationEntry> diff = diff(languageTranslations, dialectTranslations);
             writeTranslationFile(i18nFolder, diff, dialect);
         }
@@ -525,9 +528,12 @@ public class DevUITranslatorCommand implements Runnable {
         return label;
     }
 
-    private Map<String, TranslationEntry> translateEntries(Map<String, TranslationEntry> source, String languageLabel) {
+    private Map<String, TranslationEntry> translateEntries(Map<String, TranslationEntry> source, String languageLabel, boolean skipTranslation) {
         Map<String, TranslationEntry> target = new LinkedHashMap<>();
-        source.forEach((key, entry) -> target.put(key, new TranslationEntry(translate(entry.value(), languageLabel), entry.template())));
+        source.forEach((key, entry) -> {
+            String translated = skipTranslation ? entry.value() : translate(entry.value(), languageLabel);
+            target.put(key, new TranslationEntry(translated, entry.template()));
+        });
         return target;
     }
 
