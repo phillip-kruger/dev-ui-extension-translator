@@ -49,6 +49,7 @@ public class DevUITranslatorCommand implements Runnable {
     private static final Pattern TEMPLATE_LITERAL = Pattern.compile("(?s)`(?:\\\\.|[^\\\\`])*+`");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$\\{([^}]*)\\}");
     private static final Pattern CONSTRUCTOR_PATTERN = Pattern.compile("constructor\\s*\\([^)]*\\)\\s*\\{");
+    private static final Pattern SUPER_CALL_PATTERN = Pattern.compile("super\\s*\\([^;]*?;");
     private static final Pattern EXISTING_MSG_PATTERN = Pattern.compile("msg\\s*\\(\\s*['\"]");
 
     private static final Map<String, List<String>> DEFAULT_DIALECTS = Map.of(
@@ -201,6 +202,8 @@ public class DevUITranslatorCommand implements Runnable {
         try {
             String content = Files.readString(path);
             Set<String> usedKeys = new LinkedHashSet<>();
+            TemplateTextLocalizationResult textLocalization = localizeTemplateTextNodes(content, artifactId, usedKeys);
+            content = textLocalization.updatedContent();
             Map<String, String> userStrings = extractUserStrings(content, artifactId, usedKeys);
             List<TemplateLocalization> templates = extractTemplateStrings(content, artifactId, usedKeys);
             String updated = applyLocalization(content, userStrings, templates);
@@ -210,6 +213,8 @@ public class DevUITranslatorCommand implements Runnable {
             }
             Map<String, TranslationEntry> translations = userStrings.entrySet().stream()
                     .collect(toMap(Map.Entry::getValue, entry -> new TranslationEntry(entry.getKey(), false), (a, b) -> a, LinkedHashMap::new));
+            textLocalization.translations().forEach((key, literal) -> translations.putIfAbsent(key,
+                    new TranslationEntry(literal, false)));
             templates.forEach(template -> translations.put(template.key(), new TranslationEntry(template.numberedTemplate(), true)));
             return translations;
         } catch (IOException e) {
@@ -236,6 +241,9 @@ public class DevUITranslatorCommand implements Runnable {
         Matcher matcher = TEMPLATE_LITERAL.matcher(content);
         while (matcher.find()) {
             String templateBody = stripDelimiters(matcher.group());
+            if (templateBody.contains("msg(")) {
+                continue;
+            }
             if (!templateBody.contains("${")) {
                 continue;
             }
@@ -265,6 +273,9 @@ public class DevUITranslatorCommand implements Runnable {
             return false;
         }
         if (!trimmed.chars().anyMatch(Character::isLetter)) {
+            return false;
+        }
+        if (trimmed.startsWith("${") && trimmed.endsWith("}")) {
             return false;
         }
         if (!trimmed.contains(" ") && trimmed.matches("[A-Za-z0-9._/@:-]+")) {
@@ -350,6 +361,63 @@ public class DevUITranslatorCommand implements Runnable {
         return indent.toString();
     }
 
+    private TemplateTextLocalizationResult localizeTemplateTextNodes(String content, String artifactId, Set<String> usedKeys) {
+        StringBuilder updated = new StringBuilder();
+        Map<String, String> translations = new LinkedHashMap<>();
+        Matcher matcher = TEMPLATE_LITERAL.matcher(content);
+        int last = 0;
+        while (matcher.find()) {
+            updated.append(content, last, matcher.start());
+            String templateBody = stripDelimiters(matcher.group());
+            TemplateBodyLocalization bodyLocalization = localizeTemplateBody(templateBody, matcher.start(), artifactId, usedKeys, content, translations);
+            updated.append('`').append(bodyLocalization.localizedBody()).append('`');
+            last = matcher.end();
+        }
+        updated.append(content.substring(last));
+        return new TemplateTextLocalizationResult(updated.toString(), translations);
+    }
+
+    private TemplateBodyLocalization localizeTemplateBody(String templateBody, int templateStartIndex, String artifactId,
+            Set<String> usedKeys, String fullContent, Map<String, String> translations) {
+        Pattern textPattern = Pattern.compile(">(.*?)<", Pattern.DOTALL);
+        Matcher textMatcher = textPattern.matcher(templateBody);
+        StringBuilder builder = new StringBuilder();
+        int last = 0;
+        boolean modified = false;
+        while (textMatcher.find()) {
+            String segment = textMatcher.group(1);
+            String trimmed = segment.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            int segmentStartInTemplate = textMatcher.start(1);
+            int absoluteIndex = templateStartIndex + 1 + segmentStartInTemplate;
+            if (!isUserVisibleCandidate(trimmed, absoluteIndex, fullContent)) {
+                continue;
+            }
+            String key = buildKey(artifactId, trimmed, usedKeys);
+            translations.putIfAbsent(key, trimmed);
+            modified = true;
+            builder.append(templateBody, last, textMatcher.start(1));
+            int leadingIndex = segment.indexOf(trimmed);
+            String leading = segment.substring(0, leadingIndex);
+            String trailing = segment.substring(leadingIndex + trimmed.length());
+            builder.append(leading)
+                    .append("${msg('")
+                    .append(escapeSingleQuotes(trimmed))
+                    .append("', { id: '")
+                    .append(key)
+                    .append("' })}")
+                    .append(trailing);
+            last = textMatcher.end(1);
+        }
+        if (!modified) {
+            return new TemplateBodyLocalization(templateBody, false);
+        }
+        builder.append(templateBody.substring(last));
+        return new TemplateBodyLocalization(builder.toString(), true);
+    }
+
     private String applyLocalization(String content, Map<String, String> replacements, List<TemplateLocalization> templates) {
         String updated = content;
         for (Map.Entry<String, String> entry : replacements.entrySet()) {
@@ -409,10 +477,34 @@ public class DevUITranslatorCommand implements Runnable {
         }
         Matcher constructorMatcher = CONSTRUCTOR_PATTERN.matcher(content);
         if (constructorMatcher.find()) {
+            int bodyEnd = findConstructorBodyEnd(content, constructorMatcher.end());
             int insertPos = constructorMatcher.end();
+            Matcher superMatcher = SUPER_CALL_PATTERN.matcher(content);
+            if (bodyEnd > insertPos) {
+                superMatcher.region(insertPos, bodyEnd);
+                if (superMatcher.find()) {
+                    insertPos = superMatcher.end();
+                }
+            }
             return content.substring(0, insertPos) + "\n        updateWhenLocaleChanges(this);" + content.substring(insertPos);
         }
         return content;
+    }
+
+    private int findConstructorBodyEnd(String content, int searchStart) {
+        int depth = 1;
+        for (int i = searchStart; i < content.length(); i++) {
+            char ch = content.charAt(i);
+            if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return content.length();
     }
 
     private String wrapTemplateWithMsg(TemplateLocalization template) {
@@ -598,7 +690,7 @@ public class DevUITranslatorCommand implements Runnable {
     }
 
     private String escapeSingleQuotes(String value) {
-        return value.replace("'", "\\'");
+        return value.replace("\\", "\\\\").replace("'", "\\'");
     }
 
     private String escapeBackticks(String value) {
@@ -606,6 +698,12 @@ public class DevUITranslatorCommand implements Runnable {
     }
 
     private record TemplateLocalization(String literal, String numberedTemplate, String codeTemplate, String key, String indent) {
+    }
+
+    private record TemplateBodyLocalization(String localizedBody, boolean modified) {
+    }
+
+    private record TemplateTextLocalizationResult(String updatedContent, Map<String, String> translations) {
     }
 
     private record TranslationEntry(String value, boolean template) {
