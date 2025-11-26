@@ -44,9 +44,9 @@ import picocli.CommandLine.Parameters;
 @Singleton
 public class DevUITranslatorCommand implements Runnable {
 
-    private static final Pattern STRING_LITERAL = Pattern.compile("'(?:\\\\.|[^\\\\'])*'|\"(?:\\\\.|[^\\\\\"])*\"",
-            Pattern.DOTALL);
-    private static final Pattern TEMPLATE_LITERAL = Pattern.compile("`(?:\\\\.|[^\\\\`])*`", Pattern.DOTALL);
+    private static final Pattern STRING_LITERAL = Pattern.compile(
+            "(?s)'(?:\\\\.|[^\\\\'])*+'|\"(?:\\\\.|[^\\\\\"])*+\"");
+    private static final Pattern TEMPLATE_LITERAL = Pattern.compile("(?s)`(?:\\\\.|[^\\\\`])*+`");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$\\{([^}]*)\\}");
     private static final Pattern CONSTRUCTOR_PATTERN = Pattern.compile("constructor\\s*\\([^)]*\\)\\s*\\{");
     private static final Pattern EXISTING_MSG_PATTERN = Pattern.compile("msg\\s*\\(\\s*['\"]");
